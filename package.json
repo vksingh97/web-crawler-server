@@ -1,0 +1,26 @@
+{
+  "name": "web-crawler-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "nodemon src/server.js",
+    "build": "npm i"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vksingh97/web-crawler-server.git"
+  },
+  "author": "Vivek",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/vksingh97/web-crawler-server/issues"
+  },
+  "homepage": "https://github.com/vksingh97/web-crawler-server#readme",
+  "dependencies": {
+    "express": "^4.19.1",
+    "nodemon": "^3.1.0",
+    "path": "^0.12.7"
+  }
+}
