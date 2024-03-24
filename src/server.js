@@ -1,15 +1,18 @@
 const express = require('express');
-const path = require('path');
-const routes = require('./routes/routes');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+require('dotenv').config();
+require('../src/connections/mongodb');
+const routes = require('../src/routes/routes');
+const reponseHandlers = require('../src/routes/middlewares/response');
 
 const app = express();
-const port = process.env.PORT || 6001;
-
-app.use(express.text({ limit: '25mb' }));
-app.use(express.json({ limit: '1mb' }));
+const PORT = process.env.PORT || 3000;
+app.use(cors());
+app.use(bodyParser.json());
+app.use(reponseHandlers);
 app.use(routes);
-app.use('/public', express.static(path.join(__dirname, 'public')));
 
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
 });
