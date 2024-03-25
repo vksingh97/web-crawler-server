@@ -1,140 +1,101 @@
 const puppeteer = require('puppeteer');
-const robotsParser = require('robots-parser');
-const fetch = (...args) =>
-  import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const { OpenAIEmbeddings, OpenAI } = require('@langchain/openai');
+const { Pinecone } = require('@pinecone-database/pinecone');
+const { loadQAStuffChain } = require('langchain/chains');
+const { Document } = require('@langchain/core/documents');
 
-const { preprocessText } = require('../utils/helper');
-const { vectorizeText } = require('./vectorize');
-const { insertVector, searchVector } = require('./qdrant');
-const { TopN } = require('../utils/constants');
+const { createChunksAndEmbeddings } = require('./vectorize');
 
-async function crawlUrl({ url }) {
+const { insertVectorsIntoPinecone } = require('./pinecone');
+
+const crawlSinglePageContent = async ({ url }) => {
   try {
-    const data = {};
-    let bfsQueue = [url];
-    const browser = await puppeteer.launch();
-    const robotsTxtURL = `${new URL(url).origin}/robots.txt`;
-    let robotsTxtContent;
-    try {
-      robotsTxtContent = await fetch(robotsTxtURL).then((res) => res.text());
-    } catch (error) {
-      console.error('Error fetching robots.txt:', error);
-      robotsTxtContent = '';
-    }
-    const robotsTxt = robotsParser(robotsTxtURL, robotsTxtContent);
-    const deduplicatedUrls = new Set(); // Track crawled URLs to avoid duplicates
+    url = url.trim();
+    const browser = await puppeteer.launch({ headless: 'new' });
+    const page = await browser.newPage();
+    console.log(`Started crawling to ${url}..`);
+    await page.goto(url, { waitUntil: 'networkidle2' });
 
-    while (bfsQueue.length) {
-      const queueUrl = bfsQueue.pop();
-      if (deduplicatedUrls.has(queueUrl)) {
-        console.log(`Skipping duplicate URL: ${queueUrl}`);
-        continue;
-      }
-      deduplicatedUrls.add(queueUrl);
+    const title = await page.title();
+    let content = await page.$eval('body', (body) => body.textContent.trim());
+    content = content.replace(/\s/g, ' ');
 
-      console.log('crawling current url:', queueUrl);
-      const page = await browser.newPage();
-      try {
-        await page.goto(queueUrl, { waitUntil: 'networkidle2' });
-
-        // if (robotsTxt && !robotsTxt.isAllowed(queueUrl)) {
-        //   console.log(`URL ${queueUrl} is disallowed by robots.txt`);
-        //   await page.close();
-        //   continue;
-        // }
-        const textData = await page.evaluate(() => {
-          const textContent = [];
-          const elements = document.querySelectorAll('*');
-          for (const element of elements) {
-            if (element.tagName !== 'SCRIPT' && element.tagName !== 'STYLE') {
-              textContent.push(element.innerText);
-            }
-          }
-          return textContent.join(' ');
-        });
-
-        const preprocessedText = preprocessText({ text: textData });
-        data[queueUrl] = preprocessedText;
-
-        // const hrefs = await page.$$eval("a", (anchorEls) =>
-        //   anchorEls.map((a) => a.href)
-        // );
-
-        // const filteredHrefs = hrefs.filter(
-        //   (href) =>
-        //     new URL(href).origin === new URL(url).origin && // Same origin check
-        //     !deduplicatedUrls.has(href) // Not already crawled
-        // );
-        // bfsQueue.push(...filteredHrefs);
-      } catch (error) {
-        console.error('Error while crawling:', error);
-        data[queueUrl] = `Error: ${error.message}`;
-      } finally {
-        await page.close();
-      }
-    }
     await browser.close();
-    return { ok: true, data };
+
+    return { ok: true, data: { title, content, url } };
   } catch (err) {
-    console.error('Error in crawlerService: crawlUrl:', err.message);
+    console.error('Error in crawlUrl:', err.message);
     return { ok: false, err: err.message };
   }
-}
+};
+
+const askChatGpt = async ({ response, question }) => {
+  const llm = new OpenAI({});
+  const chain = loadQAStuffChain(llm);
+  const scrapedPageContent = response.matches
+    .map((match) => match.metadata.pageContent)
+    .join(' ');
+  const result = await chain.invoke({
+    input_documents: [new Document({ pageContent: scrapedPageContent })],
+    question,
+  });
+
+  console.log(`Answer: ${result.text}`);
+  return result.text;
+};
 
 module.exports = {
   crawlUrlAndVectorize: async ({ url }) => {
     try {
-      console.log('starting crawling the url: ', url);
-      const crawledData = await crawlUrl({ url });
-      if (!crawledData?.ok || crawledData?.data.length === 0) {
-        return { ok: false, err: crawledData.err };
+      console.log('Crawling URL:', url);
+      const crawledData = await crawlSinglePageContent({ url });
+      if (!crawledData?.ok || !crawledData?.data) {
+        return { ok: false, err: 'No data crawled' };
       }
-      const crawledContent = Object.values(crawledData.data);
-      console.log('Done with Crawling and preprocessing the url');
-      console.log('Vectorizing started');
-      const vector = await vectorizeText({ text: crawledContent });
-      if (!vector.ok) {
-        return { ok: false, err: vector.err };
-      }
-      console.log('Vectorizing done');
-      console.log('inserting in qdrant');
-      const insertedVector = await insertVector({
-        content: crawledContent,
-        vector: vector.data,
+
+      const vectorizedData = await createChunksAndEmbeddings({ crawledData });
+
+      const pinecone = new Pinecone();
+      const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX);
+      await insertVectorsIntoPinecone({
+        vectorizedData,
+        crawledData,
+        pineconeIndex,
       });
-      if (!insertedVector.ok) {
-        return { ok: false, err: insertedVector.err };
-      }
-      console.log('insertion in qdrant done successfully');
+
       return { ok: true, data: 'Data Crawling Completed' };
     } catch (err) {
-      console.error(
-        'Error in crawlerService: crawlUrlAndVectorize:',
-        err.stack
-      );
+      console.error('Error in crawlUrlAndVectorize:', err.stack);
       return { ok: false, err: err.message };
     }
   },
 
   askQuery: async ({ question }) => {
     try {
-      console.log('preprocessing the question: ', question);
-      const preprocessedText = preprocessText({ text: question });
-      console.log('preprocessing done: ');
-      console.log('Starting vectorization for ', question);
-      const vector = await vectorizeText({ text: [preprocessedText] });
-      if (!vector.ok) {
-        return { ok: false, err: vector.err };
+      console.log('Asking Pinecone');
+      const pinecone = new Pinecone();
+      const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX);
+
+      const openAiQueryEmbedding = await new OpenAIEmbeddings().embedQuery(
+        question
+      );
+
+      let response = await pineconeIndex.query({
+        topK: 3,
+        vector: openAiQueryEmbedding,
+        includeValues: true,
+        includeMetadata: true,
+      });
+      console.log(`Found ${response.matches.length} matches`);
+
+      let queryAnswer = '';
+
+      if (response.matches.length) {
+        queryAnswer = await askChatGpt({ response, question });
       }
-      console.log('vectorization done');
-      console.log('searching in qdrant');
-      const response = await searchVector({ vector: vector.data, topN: TopN });
-      if (!response.ok) {
-        return { ok: false, err: response.err };
-      }
-      return { ok: true, data: 'Success' };
+      return { ok: true, data: queryAnswer };
     } catch (err) {
-      console.error('Error in crawlerService: askQuery:', err.stack);
+      console.error('Error in askQuery:', err.stack);
       return { ok: false, err: err.message };
     }
   },

@@ -4,7 +4,9 @@ const cors = require('cors');
 require('dotenv').config();
 require('../src/connections/mongodb');
 const routes = require('../src/routes/routes');
+const { initialisePinecone } = require('./connections/pincone');
 const reponseHandlers = require('../src/routes/middlewares/response');
+initialisePinecone();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
