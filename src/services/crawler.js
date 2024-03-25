@@ -20,6 +20,23 @@ const crawlSinglePageContent = async ({ url }) => {
     let content = await page.$eval('body', (body) => body.textContent.trim());
     content = content.replace(/\s/g, ' ');
 
+    // For Deep Crawling
+
+    // const links = await page.$$eval('a', (anchors) =>
+    //   anchors.map((a) => a.href)
+    // );
+
+    // const visitedUrls = new Set();
+
+    // const crawledLinks = [];
+    // for (const link of links) {
+    //   if (link.startsWith('http') && !visitedUrls.has(link)) {
+    //     visitedUrls.add(link);
+    //     const crawlResult = await crawlSinglePageContent({ url: link });
+    //     crawledLinks.push(crawlResult);
+    //   }
+    // }
+
     await browser.close();
 
     return { ok: true, data: { title, content, url } };
